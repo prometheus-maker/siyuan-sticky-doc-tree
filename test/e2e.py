@@ -2,7 +2,7 @@
 """End-to-end test in real SiYuan (kernel at 127.0.0.1:6806 with this plugin installed and enabled; see
 ~/prometheus/tools/siyuan/kernel.sh). Creates a nested test notebook through SiYuan's API if missing.
 Usage: e2e.py [SHOT_DIR]"""
-import json, os, sys, urllib.request
+import json, os, sys, time, urllib.request
 from playwright.sync_api import sync_playwright
 
 URL = "http://127.0.0.1:6806"
@@ -12,14 +12,20 @@ os.makedirs(shots, exist_ok=True)
 results = []
 
 def api(path, body):
-    r = urllib.request.Request(URL + path, data=json.dumps(body).encode(), method="POST")
-    return json.load(urllib.request.urlopen(r, timeout=30))
+    for _ in range(20):  # right after boot, or for a new notebook, the kernel answers code != 0 for a few seconds
+        r = json.load(urllib.request.urlopen(urllib.request.Request(URL + path, data=json.dumps(body).encode(), method="POST"), timeout=30))
+        if r["code"] == 0: return r
+        time.sleep(1)
+    raise SystemExit(f"{path} failed: {r}")
 
 def check(name, ok, detail=""):
     results.append((name, bool(ok), detail)); print(("PASS " if ok else "FAIL ") + name, detail, flush=True)
 
 # fixture: notebook "Sticky test" with 3 levels of documents
-nbs = api("/api/notebook/lsNotebooks", {})["data"]["notebooks"]
+for _ in range(20):  # notebooks are mounted a moment after the HTTP server is up
+    nbs = api("/api/notebook/lsNotebooks", {})["data"]["notebooks"]
+    if nbs: break
+    time.sleep(1)
 nb = next((n["id"] for n in nbs if n["name"] == "Sticky test"), None)
 if not nb:
     nb = api("/api/notebook/createNotebook", {"name": "Sticky test"})["data"]["notebook"]["id"]
@@ -38,8 +44,19 @@ for path in want:  # parents first: SiYuan refuses a deep path whose parents don
         assert r["code"] == 0, (path, r)
 
 BAND = "() => [...document.querySelectorAll('.sdt-band:not(.fn__none) .sdt-row')].map(r => r.querySelector('.b3-list-item__text').textContent.trim())"
-ORIG = """name => { const li = [...document.querySelectorAll('.file-tree__items li.b3-list-item')].find(l => l.querySelector('.b3-list-item__text').textContent.trim() === name);
-  return li ? li.getBoundingClientRect().top - document.querySelector('.file-tree__items').getBoundingClientRect().top + document.querySelector('.file-tree__items').scrollTop : null; }"""
+# y of a row (in scroll coordinates) by name; scrolls through the tree because a virtual tree renders only nearby rows
+ORIG = """async name => { const sc = document.querySelector('.file-tree__items'); const keep = sc.scrollTop;
+  const find = () => [...sc.querySelectorAll('li.b3-list-item')].find(l => l.querySelector('.b3-list-item__text') && l.querySelector('.b3-list-item__text').textContent.trim() === name);
+  for (let y = 0; y <= sc.scrollHeight; y += Math.max(100, sc.clientHeight - 60)) {
+    let li = find(); if (li) { const r = li.getBoundingClientRect().top - sc.getBoundingClientRect().top + sc.scrollTop; sc.scrollTop = keep; return r; }
+    sc.scrollTop = y; await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+  }
+  sc.scrollTop = keep; return null; }"""
+# names of a row's parent chain, outermost first: nested lists (<= 3.8.9) or the tree controller (>= 3.8.10)
+CHAIN_JS = """li => { const name = l => l.querySelector('.b3-list-item__text').textContent.trim();
+  const dock = window.siyuan.layout && window.siyuan.layout.leftDock && window.siyuan.layout.leftDock.data.file; const ctl = dock && dock.docTree;
+  if (ctl && li.dataset.treeKey) { const out = []; for (let k = li.dataset.treeKey; k; k = (ctl.getItem(k) || {}).parentKey) { const it = ctl.getItem(k); out.unshift(it.name.replace(/\\.sy$/, '')); } return out; }
+  const out = []; for (let l = li; l; ) { out.unshift(name(l)); const p = l.parentElement && l.parentElement.previousElementSibling; l = p && p.tagName === 'LI' ? p : null; } return out; }"""
 
 with sync_playwright() as p:
     b = p.chromium.launch(env=dict(os.environ, LD_LIBRARY_PATH=LIBS))
@@ -47,15 +64,22 @@ with sync_playwright() as p:
     pg.set_default_timeout(15000)
     errs = []; pg.on("pageerror", lambda e: errs.append(str(e)))
     pg.goto(URL); pg.wait_for_selector(".file-tree li[data-type='navigation-root']", timeout=30000); pg.wait_for_timeout(1500)
-    # collapse other notebooks, expand everything in the test notebook
-    pg.evaluate("""() => document.querySelectorAll('.file-tree li[data-type=navigation-root] .b3-list-item__arrow--open').forEach(a => a.closest('.b3-list-item__toggle').click())""")
-    pg.wait_for_timeout(600)
-    for _ in range(6):
-        n = pg.evaluate("""() => { const root = [...document.querySelectorAll('.file-tree li[data-type=navigation-root]')].find(l => l.textContent.includes('Sticky test'));
-          const scope = [root, ...(root.nextElementSibling ? root.nextElementSibling.querySelectorAll('li') : [])]; let n = 0;
-          scope.forEach(li => { const a = li.querySelector('.b3-list-item__arrow'); const t = li.querySelector('.b3-list-item__toggle');
-            if (a && t && !a.classList.contains('b3-list-item__arrow--open') && !t.classList.contains('fn__hidden')) { t.click(); n++; } }); return n; }""")
-        pg.wait_for_timeout(700)
+    # collapse other notebooks, expand everything in the test notebook (nested <= 3.8.9 or flat aria-expanded >= 3.8.10)
+    pg.evaluate("""() => document.querySelectorAll('.file-tree li[data-type=navigation-root]').forEach(li => {
+      const open = li.getAttribute('aria-expanded') === 'true' || li.querySelector('.b3-list-item__arrow--open');
+      if (open && !li.textContent.includes('Sticky test')) li.querySelector('.b3-list-item__toggle').click(); })""")
+    pg.wait_for_timeout(800)
+    for _ in range(12):
+        n = pg.evaluate("""async () => { const sc = document.querySelector('.file-tree__items'); let n = 0;
+          for (let y = 0; y <= sc.scrollHeight; y += 300) { sc.scrollTop = y; await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+            for (const li of sc.querySelectorAll('li.b3-list-item')) {
+              const t = li.querySelector('.b3-list-item__toggle'); const a = li.querySelector('.b3-list-item__arrow');
+              if (!t || !a || t.classList.contains('fn__hidden')) continue;
+              if (li.dataset.type === 'navigation-root' && !li.textContent.includes('Sticky test')) continue;
+              const closed = li.hasAttribute('aria-expanded') ? li.getAttribute('aria-expanded') === 'false' : !a.classList.contains('b3-list-item__arrow--open');
+              if (closed) { t.click(); n++; await new Promise(r => setTimeout(r, 150)); } } }
+          sc.scrollTop = 0; return n; }""")
+        pg.wait_for_timeout(800)
         if not n: break
     names = pg.evaluate("[...document.querySelectorAll('.file-tree__items li.b3-list-item')].filter(l => l.offsetParent).map(l => l.querySelector('.b3-list-item__text').textContent.trim())")
     print("visible rows:", len(names), names[:12], flush=True)
@@ -115,20 +139,34 @@ with sync_playwright() as p:
     w1 = pg.evaluate("document.querySelector('.sdt-band').getBoundingClientRect().width")
     w2 = pg.evaluate("document.querySelector('.file-tree__items').clientWidth")
     check("band matches the tree width", abs(w1 - w2) < 1, f"{w1} vs {w2}")
+    # pinned rows line up with real rows: same name position and width at the same depth (3.8.10 rows have side margins)
+    y = pg.evaluate(ORIG, "Detail 2.3.2")
+    scroll_to(y - 2 * h)
+    off = pg.evaluate("""() => { const sc = document.querySelector('.file-tree__items'); const out = [];
+      const pos = li => { const r = li.getBoundingClientRect(), t = li.querySelector('.b3-list-item__text').getBoundingClientRect(); return [t.left, r.left, r.width]; };
+      const depth = li => getComputedStyle(li).getPropertyValue('--file-tree-depth') || li.querySelector('.b3-list-item__toggle').style.paddingLeft;  // 3.8.10 | 3.8.9
+      for (const b of document.querySelectorAll('.sdt-band li')) { const d = depth(b);
+        const real = [...sc.querySelectorAll('li.b3-list-item')].find(li => !li.closest('.sdt-band') && li.getBoundingClientRect().height > 0
+          && depth(li) === d);
+        if (real) out.push(pos(b).map((v, i) => Math.round(v - pos(real)[i]))); }
+      return out; }""")
+    check("pinned rows line up with real rows", off and all(o == [0, 0, 0] for o in off), str(off))
     # sweep: at every position, if the row at the top edge is a document (has a parent) the band must name its notebook,
     # and the band must be a real parent chain
     bad = pg.evaluate("""async () => { const sc = document.querySelector('.file-tree__items'); const bad = [];
       const name = li => li.querySelector('.b3-list-item__text').textContent.trim();
-      const parent = li => { const p = li.parentElement && li.parentElement.previousElementSibling; return p && p.tagName === 'LI' ? p : null; };
+      const chainOf = (""" + CHAIN_JS + """);
       for (let y = 0; y <= sc.scrollHeight - sc.clientHeight; y += 3) {
         sc.scrollTop = y; await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
         const top = sc.getBoundingClientRect().top;
         const rows = [...sc.querySelectorAll('li.b3-list-item')].filter(l => l.offsetParent);
         const first = rows.filter(l => l.getBoundingClientRect().top <= top + 1).pop();
         const band = [...document.querySelectorAll('.sdt-band:not(.fn__none) .sdt-row')].map(r => r.querySelector('.b3-list-item__text').textContent.trim());
-        if (first && parent(first) && first.getBoundingClientRect().top < top - 1 && !band.length) bad.push(y + ': empty band, top row ' + name(first));
-        const chain = []; for (let l = first; l; l = parent(l)) chain.unshift(name(l));
-        if (band.length && band.some((n, i) => chain[i] !== n) && !band.every((n, i) => i === 0 || true)) bad.push(y + ': ' + band.join('>'));
+        const chain = first ? chainOf(first) : [];
+        if (first && chain.length > 1 && first.getBoundingClientRect().top < top - 1 && !band.length) bad.push(y + ': empty band, top row ' + name(first));
+        const hh = rows.length > 1 ? rows[1].getBoundingClientRect().top - rows[0].getBoundingClientRect().top : 29;
+        const under = rows.filter(l => l.getBoundingClientRect().top <= top + (band.length - 0.5) * hh).pop();
+        if (band.length && under && chainOf(under).slice(0, band.length).join('>') !== band.join('>')) bad.push(y + ': band ' + band.join('>') + ' vs ' + chainOf(under).join('>'));
       }
       return bad; }""")
     check("sweep: band never empty when a document is cut off at the top", not bad, f"{len(bad)} bad, e.g. {bad[:3]}")

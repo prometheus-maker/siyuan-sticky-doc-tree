@@ -20,7 +20,7 @@ does with sticky scroll.
 
 Desktop and browser only; the mobile document tree is left alone. It draws copies of the rows over the top of the
 tree and does not change SiYuan's own tree, so turning the plugin off removes it completely. Tested on SiYuan 3.8.9
-(Linux, browser front end).
+and 3.8.10-beta.2, whose document tree was rebuilt (Linux, browser front end).
 
 Requested in [siyuan-note/siyuan#16349](https://github.com/siyuan-note/siyuan/issues/16349).
 

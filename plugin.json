@@ -2,7 +2,7 @@
   "name": "sticky-doc-tree",
   "author": "prometheus-maker",
   "url": "https://github.com/prometheus-maker/siyuan-sticky-doc-tree",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "minAppVersion": "3.0.0",
   "backends": [
     "all"
