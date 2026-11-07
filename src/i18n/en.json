@@ -1,0 +1,4 @@
+{
+ "maxRows": "Rows to keep at the top",
+ "maxRowsDesc": "The most parent levels shown at once. Deeper ones scroll away as usual."
+}

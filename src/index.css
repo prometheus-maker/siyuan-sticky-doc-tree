@@ -1,0 +1,6 @@
+/* Sticky Doc Tree */
+.sdt-host { position: relative; }
+.sdt-band { position: absolute; z-index: 2; overflow: hidden; background: var(--sdt-bg, var(--b3-theme-background)); box-shadow: 0 1px 0 var(--b3-border-color), 0 4px 6px -4px rgba(0, 0, 0, .18); }
+.sdt-band .sdt-row { position: absolute; left: 0; right: 0; margin: 0; box-sizing: border-box; }
+.sdt-band .sdt-row:not(.b3-list-item--focus):not(:hover) { background: var(--sdt-bg, var(--b3-theme-background)); }
+.sdt-band .sdt-row:last-child { z-index: -1; }

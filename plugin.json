@@ -1,0 +1,38 @@
+{
+  "name": "sticky-doc-tree",
+  "author": "prometheus-maker",
+  "url": "https://github.com/prometheus-maker/siyuan-sticky-doc-tree",
+  "version": "1.0.0",
+  "minAppVersion": "3.0.0",
+  "backends": [
+    "all"
+  ],
+  "frontends": [
+    "desktop",
+    "browser-desktop",
+    "desktop-window"
+  ],
+  "displayName": {
+    "default": "Sticky Doc Tree",
+    "zh-CN": "文档树吸顶路径"
+  },
+  "description": {
+    "default": "While you scroll a long document tree, the notebook and parent documents stay pinned at the top, like sticky scroll in VS Code.",
+    "zh-CN": "滚动很长的文档树时，笔记本和上级文档固定在顶部，类似 VS Code 的粘性滚动。"
+  },
+  "readme": {
+    "default": "README.md",
+    "zh-CN": "README.zh-CN.md"
+  },
+  "icon": "icon.png",
+  "preview": "preview.png",
+  "keywords": [
+    "doc tree",
+    "file tree",
+    "sticky",
+    "navigation",
+    "文档树",
+    "吸顶",
+    "导航"
+  ]
+}
